@@ -530,6 +530,14 @@ function normalizeSlide(xml){
   if(title){
     setGeom(title.xf,496404,titleY,Math.min(title.b.cx,FRAME.R-496404),369332);
     setFont(title.el,1800);
+    /* the support office reports as two sections: both titles read 업무지원실(...) */
+    const tt=textOf(title.el).replace(/\s+/g,"");
+    let nt=null;
+    if(!/업무지원실/.test(tt)){
+      if(/인사총무/.test(tt))nt="□ 업무지원실(인사총무)";
+      else if(/환경안전/.test(tt))nt="□ 업무지원실(환경안전)";
+    }
+    if(nt){const ts=Array.from(title.el.getElementsByTagNameNS(NS_A,"t"));if(ts.length){ts[0].textContent=nt;for(let i=1;i<ts.length;i++)ts[i].textContent=""}}
   }
   for(const o of body){
     if(o.el.localName==="sp"&&o.b.cy<340000){
