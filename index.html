@@ -162,7 +162,7 @@ select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid 
 
     <ol class="ledger" id="ledger" aria-label="부서별 제출 현황"></ol>
 
-    <p class="foot">부서 파일의 개별 표지 슬라이드는 취합할 때 자동으로 빠지고, 모든 슬라이드는 규격 파일의 제목·기간·구분선 위치와 글자 크기, 본문 영역에 맞춰 정렬됩니다. 표는 가로 31.1cm로 맞추고, 화면을 꽉 채우는 큰 표는 세로 16.5cm로 맞춥니다. 붙여넣은 엑셀 개체가 큰 슬라이드는 깨짐을 막기 위해 본문 크기를 바꾸지 않습니다. 주차는 회의일의 일자를 7로 나눠 올림한 값으로 채워지며 직접 고칠 수 있습니다. 계산 검사는 표의 차이(실적−계획), 달성률(실적÷계획), 합계 행을 다시 계산해 표기와 비교합니다. 엑셀 개체로 붙여넣은 표는 검사하지 못합니다.</p>
+    <p class="foot">부서 파일의 개별 표지 슬라이드는 취합할 때 자동으로 빠지고, 모든 슬라이드는 규격 파일의 제목·기간·구분선 위치와 글자 크기, 본문 영역에 맞춰 정렬됩니다. 표는 가로 31.1cm로 맞추고, 화면을 꽉 채우는 큰 표는 세로 16.5cm로 맞춥니다. 붙여넣은 엑셀 개체가 큰 슬라이드는 깨짐을 막기 위해 본문 크기를 바꾸지 않습니다. 주차는 회의일의 일자를 7로 나눠 올림한 값으로 채워지며 직접 고칠 수 있습니다. 계산 검사는 표의 차이(실적−계획), 달성률(실적÷계획), 합계 행을 다시 계산해 표기와 비교합니다. 엑셀 개체로 붙여넣은 표는 안에 든 엑셀 값을 읽어 같은 방식으로 검사하며, 이 값은 개체를 열어 직접 고쳐야 합니다(변경하기 버튼 없음).</p>
     <div class="actions"><button id="resetBtn" class="link danger">새 주차 시작 (제출 파일 모두 비우기)</button></div>
   </section>
 
@@ -319,7 +319,7 @@ const MAX_B64=20*1024*1024-4096;
 const $=id=>document.getElementById(id);
 const slotId=n=>"slot"+String(n).padStart(2,"0");
 let db=null, assets=null, downloads=null, sampleCap=null;
-const CHK=2; /* version of the stored check results; older ones have no 변경하기 information */
+const CHK=3; /* version of the stored check results; older ones have no 변경하기 information */
 let busyText="";
 let docs={}, busy=null, merging=false, metaDate="2026-10-28", metaTime="07:30", metaWeek=4;
 const WD=["일","월","화","수","목","금","토"];
@@ -984,18 +984,58 @@ function checkTable(rows,slideNo,out,ti){
   }
 }
 /* dates in the body are written like 10/30; flag other notations (10.30, 10월 30일, 2026.10.30) */
-function dateIssues(t,s,out){
+function dateIssues(t,s,out,noFix){
   const seen=new Set();
-  const add=(orig,fix)=>{if(seen.has(orig))return;seen.add(orig);out.push({lv:"fmt",s,f:orig,r:fix,m:"슬라이드 "+s+" · 날짜 표기: \""+orig+"\" → "+fix+" 형식으로 (\""+t.slice(0,40)+(t.length>40?"…":"")+"\")"})};
+  const add=(orig,fix)=>{
+    if(seen.has(orig))return;seen.add(orig);
+    const item={lv:"fmt",s,m:"슬라이드 "+s+(noFix?" · 엑셀 개체":"")+" · 날짜 표기: \""+orig+"\" → "+fix+" 형식으로 (\""+t.slice(0,40)+(t.length>40?"…":"")+"\")"+(noFix?" (개체 안의 엑셀 값이라 파일에서 직접 고쳐야 함)":"")};
+    if(!noFix){item.f=orig;item.r=fix}
+    out.push(item);
+  };
   for(const m of t.matchAll(/(\d{1,2})월\s*(\d{1,2})일/g))add(m[0],+m[1]+"/"+ +m[2]);
   for(const m of t.matchAll(/(?<![\d.\/])20\d\d\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})(?!\d)/g))add(m[0],+m[1]+"/"+ +m[2]);
-  for(const m of t.matchAll(/(?<![\d.\/])(\d{1,2})\.(\d{2})(?![\d.]|\s*(?:kg|Kg|KG|mm|㎜|%|억|원|s\b|ea|EA|pcs|개|천|만|\$|도|Φ))/g)){
+  if(!/^\s*\d{1,2}\.\d{2}\s*$/.test(t))for(const m of t.matchAll(/(?<![\d.\/])(\d{1,2})\.(\d{2})(?![\d.]|\s*(?:kg|Kg|KG|mm|㎜|%|억|원|s\b|ea|EA|pcs|개|천|만|\$|도|Φ))/g)){
     const a=+m[1],b=+m[2];
     if(a>=1&&a<=12&&b>=10&&b<=31)add(m[0],a+"/"+b);
   }
 }
+/* reads the sheet that an embedded Excel object shows (active sheet, limited to the displayed range) as rows of text */
+async function xlsxRows(u8){
+  const z=await JSZip.loadAsync(u8);
+  const rd=async n=>{const f=z.file(n);return f?await f.async("string"):null};
+  const wbx=await rd("xl/workbook.xml");if(!wbx)return null;
+  const wb=parseXml(wbx);
+  const sheets=Array.from(wb.getElementsByTagName("sheet"));
+  const view=wb.getElementsByTagName("workbookView")[0];
+  const active=view&&view.getAttribute("activeTab")?+view.getAttribute("activeTab"):0;
+  const sh=sheets[active]||sheets[0];if(!sh)return null;
+  const relsX=await rd("xl/_rels/workbook.xml.rels");if(!relsX)return null;
+  const rel=parseRels(relsX).find(r=>r.id===sh.getAttributeNS(NS_R,"id"));if(!rel)return null;
+  const sx=await rd(resolvePath("xl",rel.target));if(!sx)return null;
+  const ss=[];
+  const ssx=await rd("xl/sharedStrings.xml");
+  if(ssx)for(const si of Array.from(parseXml(ssx).getElementsByTagName("si")))ss.push(Array.from(si.getElementsByTagName("t")).map(t=>t.textContent).join(""));
+  const colIdx=s=>{let n=0;for(const ch of s)n=n*26+ch.charCodeAt(0)-64;return n-1};
+  const cells=new Map();let maxR=0,maxC=0;
+  for(const c of Array.from(parseXml(sx).getElementsByTagName("c"))){
+    const m=(c.getAttribute("r")||"").match(/^([A-Z]+)(\d+)$/);if(!m)continue;
+    const cc=colIdx(m[1]),rr=+m[2],t=c.getAttribute("t"),v=c.getElementsByTagName("v")[0];
+    let val="";
+    if(t==="inlineStr")val=Array.from(c.getElementsByTagName("t")).map(x=>x.textContent).join("");
+    else if(v){val=v.textContent;if(t==="s")val=ss[+val]||"";else if(t==="e")val=""}
+    if(val!==""){cells.set(rr+","+cc,val);maxR=Math.max(maxR,rr);maxC=Math.max(maxC,cc)}
+  }
+  let r1=1,c1=0,r2=maxR,c2=maxC;
+  const ole=wb.getElementsByTagName("oleSize")[0],ref=ole&&ole.getAttribute("ref");
+  const rm=ref&&ref.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
+  if(rm){c1=colIdx(rm[1]);r1=+rm[2];c2=colIdx(rm[3]);r2=+rm[4]}
+  r2=Math.min(r2,r1+80);c2=Math.min(c2,c1+40);
+  const rows=[];
+  for(let r=r1;r<=r2;r++){const row=[];for(let c=c1;c<=c2;c++)row.push((cells.get(r+","+c)||"").trim());rows.push(row)}
+  return rows;
+}
 async function validateDeck(zip){
-  const out=[];let tables=0,ole=0;const texts=[];
+  const out=[];let tables=0,ole=0,oleRead=0;const texts=[];
   const slides=await orderedSlides(zip);
   for(let i=0;i<slides.length;i++){
     const f=zip.file(slides[i]);if(!f)continue;
@@ -1003,7 +1043,24 @@ async function validateDeck(zip){
     const xml=await f.async("string");
     const doc=new DOMParser().parseFromString(xml,"application/xml");
     if(doc.getElementsByTagName("parsererror").length)continue;
-    ole+=Array.from(doc.getElementsByTagNameNS(NS_P,"graphicFrame")).filter(g=>g.getElementsByTagNameNS(NS_P,"oleObj").length).length;
+    const oleFrames=Array.from(doc.getElementsByTagNameNS(NS_P,"graphicFrame")).filter(g=>g.getElementsByTagNameNS(NS_P,"oleObj").length);
+    ole+=oleFrames.length;
+    if(oleFrames.length){
+      const rf=zip.file(relsPathFor(slides[i])),rmap=new Map(rf?parseRels(await rf.async("string")).map(r=>[r.id,r]):[]);
+      for(const g of oleFrames){
+        const oe=g.getElementsByTagNameNS(NS_P,"oleObj")[0],rel=rmap.get(oe.getAttributeNS(NS_R,"id"));
+        if(!rel||rel.external||!/\.xlsx$/i.test(rel.target))continue;
+        const wf=zip.file(resolvePath(dirname(slides[i]),rel.target));if(!wf)continue;
+        try{
+          const rows=await xlsxRows(await wf.async("uint8array"));
+          if(!rows||rows.length<2)continue;
+          oleRead++;
+          const tmp=[];checkTable(rows,i+1,tmp,-1);
+          for(const it of tmp){delete it.fx;it.m=it.m.replace(/^슬라이드 (\d+)/,"슬라이드 $1 · 엑셀 개체")+" (개체 안의 엑셀 값이라 파일에서 직접 고쳐야 함)";out.push(it)}
+          for(const row of rows)for(const cell of row)if(cell)dateIssues(cell,i+1,out,true);
+        }catch(e){}
+      }
+    }
     for(const para of Array.from(doc.getElementsByTagNameNS(NS_A,"p"))){
       const t=Array.from(para.getElementsByTagNameNS(NS_A,"t")).map(x=>x.textContent).join("").trim();
       if(!t||t.startsWith("□")||/^기간\s*:/.test(t))continue;
@@ -1018,7 +1075,7 @@ async function validateDeck(zip){
       checkTable(rows,i+1,out,ti);
     }
   }
-  return {issues:out.slice(0,60),tables,ole,texts};
+  return {issues:out.slice(0,60),tables,ole,oleRead,texts};
 }
 /* typo check by Claude (the page's `sample` capability); returns null when it is not available */
 async function typoCheck(texts){
@@ -1079,7 +1136,11 @@ function issueBlock(data,no){
   else if(n){pill.classList.add("warn");pill.textContent="참고 "+n+"건"}
   else{pill.classList.add("ok");pill.textContent="계산 이상 없음"}
   wrap.appendChild(pill);
-  if(data.ole){const s=document.createElement("span");s.className="meta";s.textContent=" 엑셀 개체 "+data.ole+"개는 계산 검사 제외";wrap.appendChild(s)}
+  if(data.ole){
+    const s=document.createElement("span");s.className="meta";const n=data.oleRead||0;
+    s.textContent=n>=data.ole?" 엑셀 개체 "+data.ole+"개도 검사함":(n?" 엑셀 개체 "+data.ole+"개 중 "+n+"개 검사":" 엑셀 개체 "+data.ole+"개는 검사하지 못함");
+    wrap.appendChild(s);
+  }
   if(data.typo==="skip"){const s=document.createElement("span");s.className="meta";s.textContent=" 오타 검사 제외";wrap.appendChild(s)}
   if(data.typo==="stale"){const s=document.createElement("span");s.className="meta";s.textContent=" 오타 검사는 \u0027전체 다시 검사\u0027로 다시 해야 합니다";wrap.appendChild(s)}
   if(data.issues.length){
@@ -1316,7 +1377,7 @@ async function upload(no,file,opts={}){
       }
     }catch(e){for(const id of ids){try{await assets.delete(id)}catch(x){}}throw e}
     const prev=docs[slotId(no)];
-    await db.doc("submissions/"+slotId(no)).set({slot:no,dept:deptByNo(no).name,fileName:file.name,assetIds:ids,assetId:ids[0],size:outBuf.byteLength,slides,slimmed:{count:slim.count,saved:slim.saved},issues:val.issues,typo:val.typo,chk:CHK,tables:val.tables,ole:val.ole,uploadedAt:new Date().toISOString()});
+    await db.doc("submissions/"+slotId(no)).set({slot:no,dept:deptByNo(no).name,fileName:file.name,assetIds:ids,assetId:ids[0],size:outBuf.byteLength,slides,slimmed:{count:slim.count,saved:slim.saved},issues:val.issues,typo:val.typo,chk:CHK,tables:val.tables,ole:val.ole,oleRead:val.oleRead,uploadedAt:new Date().toISOString()});
     lastUp={no};
     if(prev)for(const id of idsOf(prev)){if(!ids.includes(id)){try{await assets.delete(id)}catch(e){}}}
     const ec=issueCounts({issues:val.issues});
@@ -1456,7 +1517,7 @@ async function fixIssues(no,items){
         ids.push((await assets.upload(new Blob([chunks[i]],{type:"text/plain"}),{type:"text/plain"})).id);
       }
     }catch(e){for(const id of ids){try{await assets.delete(id)}catch(x){}}throw e}
-    await db.doc("submissions/"+slotId(no)).update({assetIds:ids,assetId:ids[0],size:buf.byteLength,issues:val.issues,chk:CHK,tables:val.tables,ole:val.ole});
+    await db.doc("submissions/"+slotId(no)).update({assetIds:ids,assetId:ids[0],size:buf.byteLength,issues:val.issues,chk:CHK,tables:val.tables,ole:val.ole,oleRead:val.oleRead});
     for(const id of idsOf(data)){if(!ids.includes(id)){try{await assets.delete(id)}catch(e){}}}
     msg(log,missed.length?"warn":"ok",deptByNo(no).name+": "+changed+"곳을 바꿨습니다."+(missed.length?" "+missed.length+"건은 파일에서 찾지 못했습니다.":"")+" 취합본에 바로 반영되며, 부서의 원래 파일은 바뀌지 않습니다.");
   }catch(e){msg(log,"err","변경하지 못했습니다. "+errText(e))}
@@ -1475,7 +1536,7 @@ async function autoUpgrade(){
       try{
         const val=await validateDeck(await JSZip.loadAsync(await fetchZip(data)));
         const oldTypo=(data.issues||[]).filter(x=>x.lv==="typo"&&x.f!==undefined);
-        await db.doc("submissions/"+slotId(d.no)).update({issues:val.issues.concat(oldTypo).slice(0,60),typo:oldTypo.length?data.typo:(data.typo==="done"?"stale":data.typo),chk:CHK,tables:val.tables,ole:val.ole});
+        await db.doc("submissions/"+slotId(d.no)).update({issues:val.issues.concat(oldTypo).slice(0,60),typo:oldTypo.length?data.typo:(data.typo==="done"?"stale":data.typo),chk:CHK,tables:val.tables,ole:val.ole,oleRead:val.oleRead});
       }catch(e){}
     }
   }finally{upgrading=false}
@@ -1490,7 +1551,7 @@ async function recheckAll(){
       const zip=await JSZip.loadAsync(await fetchZip(data));
       const val=await validateDeck(zip);
       await addTypos(val);
-      await db.doc("submissions/"+slotId(d.no)).update({issues:val.issues,typo:val.typo,chk:CHK,tables:val.tables,ole:val.ole});
+      await db.doc("submissions/"+slotId(d.no)).update({issues:val.issues,typo:val.typo,chk:CHK,tables:val.tables,ole:val.ole,oleRead:val.oleRead});
       n++;
     }
     msg(log,"ok",n+"개 부서의 계산 검사를 마쳤습니다.");
